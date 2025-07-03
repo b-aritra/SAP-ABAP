@@ -1,0 +1,59 @@
+REPORT zmm_upload_report.
+
+TYPE-POOLS: truxs, slis.
+
+TYPES: BEGIN OF ty_excel,
+         msg_id   TYPE i,
+         name     TYPE char50,
+         msg_type TYPE char20,
+         msg_no   TYPE i,
+       END OF ty_excel.
+
+DATA: it_excel TYPE STANDARD TABLE OF ty_excel,
+      wa_excel TYPE ty_excel,
+      it_raw   TYPE truxs_t_text_data.
+
+
+PARAMETERS: p_file TYPE rlgrap-filename OBLIGATORY.
+
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_file.
+  CALL FUNCTION 'F4_FILENAME'
+    IMPORTING
+      file_name = p_file.
+
+START-OF-SELECTION.
+
+  CALL FUNCTION 'TEXT_CONVERT_XLS_TO_SAP'
+    EXPORTING
+      i_line_header        = 'X'
+      i_tab_raw_data       = it_raw
+      i_filename           = p_file
+    TABLES
+      i_tab_converted_data = it_excel
+    EXCEPTIONS
+      conversion_failed    = 1
+      OTHERS               = 2.
+
+  IF sy-subrc <> 0.
+    MESSAGE 'Excel upload failed.' TYPE 'E'.
+  ENDIF.
+
+  DATA: lt_fieldcat TYPE slis_t_fieldcat_alv,
+        ls_fieldcat TYPE slis_fieldcat_alv.
+
+  lt_fieldcat = VALUE #(
+      ( fieldname = 'MSG_ID' seltext_m = 'Message Id')
+      ( fieldname = 'NAME' seltext_m = 'NAME' )
+      ( fieldname = 'MSG_TYPE' seltext_m = 'Message text')
+      ( fieldname = 'MSG_NO' seltext_m = 'Message NO')
+      ).
+
+
+  CALL FUNCTION 'REUSE_ALV_GRID_DISPLAY'
+    EXPORTING
+      it_fieldcat   = lt_fieldcat
+    TABLES
+      t_outtab      = it_excel
+    EXCEPTIONS
+      program_error = 1
+      OTHERS        = 2.
