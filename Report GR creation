@@ -1,0 +1,170 @@
+REPORT zmm_gr_creation.
+
+TABLES: ekpo.
+
+TYPES: BEGIN OF ty_output,
+         po_number  TYPE ebeln,
+         doc_year   TYPE mjahr,
+         doc_date   TYPE bldat,
+         pstng_date TYPE budat,
+         po_item    TYPE ebelp,
+         quantity   TYPE menge_d,
+         plant      TYPE werks_d,
+         stge_loc   TYPE lgort_d,
+         move_type  TYPE bapi2017_gm_item_create-move_type,
+         message    TYPE bapiret2-message,
+       END OF ty_output.
+
+DATA: wa_output TYPE ty_output,
+      it_output TYPE STANDARD TABLE OF ty_output.
+
+* Parameters for input
+PARAMETERS: p_ebeln TYPE ebeln OBLIGATORY,
+            p_ebelp TYPE ebelp,
+            p_budat TYPE budat,
+            p_bldat TYPE bldat.
+
+* ALV
+CLASS cl_gui_alv_grid DEFINITION LOAD.
+CLASS cl_gui_custom_container DEFINITION LOAD.
+
+DATA: o_alv TYPE REF TO cl_gui_alv_grid,
+      o_con TYPE REF TO cl_gui_custom_container.
+
+DATA: it_fieldcat TYPE lvc_t_fcat,
+      wa_fieldcat TYPE lvc_s_fcat.
+
+START-OF-SELECTION.
+
+  DATA: wa_head   TYPE bapi2017_gm_head_01,
+        wa_item   TYPE bapi2017_gm_item_create,
+        it_item   TYPE TABLE OF bapi2017_gm_item_create,
+        it_return TYPE TABLE OF bapiret2,
+        wa_return TYPE bapiret2,
+        wa_po     TYPE ekpo.
+
+* Get PO item details
+  SELECT SINGLE * FROM ekpo INTO wa_po
+    WHERE ebeln = p_ebeln AND ebelp = p_ebelp.
+
+  IF sy-subrc <> 0.
+    MESSAGE 'PO item not found' TYPE 'E'.
+  ENDIF.
+
+* Fill header
+  wa_head-pstng_date = p_budat.
+  wa_head-doc_date   = p_bldat.
+  wa_head-pr_uname   = sy-uname.
+
+* Fill item
+  CLEAR wa_item.
+  wa_item-po_number  = p_ebeln.
+  wa_item-plant      = wa_po-werks.
+  wa_item-stge_loc   = wa_po-lgort.
+  wa_item-move_type  = '101'.
+  wa_item-entry_qnt  = wa_po-menge.
+  wa_item-entry_uom  = wa_po-meins.
+  wa_item-po_item    = p_ebelp.
+
+  APPEND wa_item TO it_item.
+
+* Call BAPI to post GR
+  CALL FUNCTION 'BAPI_GOODSMVT_CREATE'
+    EXPORTING
+      goodsmvt_header = wa_head
+      goodsmvt_code   = VALUE bapi2017_gm_code( gm_code = '01' )
+    IMPORTING
+      matdocumentyear = wa_output-doc_year
+    TABLES
+      goodsmvt_item   = it_item
+      return          = it_return.
+
+* Check for errors
+  LOOP AT it_return INTO wa_return.
+    IF wa_return-type = 'E' OR wa_return-type = 'A'.
+      wa_output-message = wa_return-message.
+      APPEND wa_output TO it_output.
+      CALL FUNCTION 'BAPI_TRANSACTION_ROLLBACK'.
+      EXIT.
+    ENDIF.
+  ENDLOOP.
+
+  IF sy-subrc = 0.
+    CALL FUNCTION 'BAPI_TRANSACTION_COMMIT'
+      EXPORTING
+        wait = 'X'.
+
+    READ TABLE it_item INTO wa_item INDEX 1.
+
+
+    wa_output-po_number  = p_ebeln.
+    wa_output-doc_date   = p_bldat.
+    wa_output-pstng_date = p_budat.
+    wa_output-po_item    = p_ebelp.
+    wa_output-quantity   = wa_item-entry_qnt.
+    wa_output-plant      = wa_item-plant.
+    wa_output-stge_loc   = wa_item-stge_loc.
+    wa_output-move_type  = wa_item-move_type.
+    wa_output-message    = 'GR Created Successfully'.
+
+    APPEND wa_output TO it_output.
+  ENDIF.
+
+* Display ALV
+  CALL SCREEN 100.
+
+*---------------------------------------------------------------------*
+*  SCREEN 100
+*---------------------------------------------------------------------*
+MODULE status_0100 OUTPUT.
+  SET PF-STATUS 'ZSTANDARD'.
+  IF o_con IS INITIAL.
+    CREATE OBJECT o_con
+      EXPORTING
+        container_name = 'CC_ALV'.
+
+    CREATE OBJECT o_alv
+      EXPORTING
+        i_parent = o_con.
+
+    PERFORM build_fieldcat.
+
+    CALL METHOD o_alv->set_table_for_first_display
+      EXPORTING
+        i_structure_name = ''
+      CHANGING
+        it_outtab        = it_output
+        it_fieldcatalog  = it_fieldcat.
+  ENDIF.
+ENDMODULE.
+
+MODULE user_command_0100 INPUT.
+  CASE sy-ucomm.
+    WHEN 'BACK' OR 'EXIT' OR 'CANCEL'.
+      LEAVE PROGRAM.
+  ENDCASE.
+ENDMODULE.
+
+*---------------------------------------------------------------------*
+* Build field catalog
+*---------------------------------------------------------------------*
+FORM build_fieldcat.
+  DEFINE add_field.
+    CLEAR wa_fieldcat.
+    wa_fieldcat-fieldname = &1.
+    wa_fieldcat-coltext   = &2.
+    APPEND wa_fieldcat TO it_fieldcat.
+  END-OF-DEFINITION.
+
+  add_field 'PO_NUMBER'  'PO No'.
+  add_field 'DOC_YEAR'   'Doc Year'.
+  add_field 'DOC_DATE'   'Doc Date'.
+  add_field 'PSTNG_DATE' 'Posting Date'.
+  add_field 'PO_ITEM'    'PO Item'.
+  add_field 'QUANTITY'   'Quantity'.
+  add_field 'PLANT'      'Plant'.
+  add_field 'STGE_LOC'   'Storage Loc'.
+  add_field 'MOVE_TYPE'  'Movement Type'.
+  add_field 'MESSAGE'    'Message'.
+
+ENDFORM.
