@@ -1,0 +1,283 @@
+REPORT zmm_po_item_history.
+
+TYPE-POOLS: slis.
+TABLES: ekko, ekpo, bapiekbe.
+
+TYPES: BEGIN OF ty_ekko,
+         ebeln TYPE ekko-ebeln,
+         bedat TYPE ekko-bedat,
+         bsart TYPE ekko-bsart,
+         bukrs TYPE ekko-bukrs,
+         lifnr TYPE ekko-lifnr,
+       END OF ty_ekko.
+
+TYPES: BEGIN OF ty_ekpo,
+         ebeln      TYPE ekpo-ebeln,
+         ebelp      TYPE ekpo-ebelp,
+         ekpo_matnr TYPE ekpo-matnr,
+         txz01      TYPE ekpo-txz01,
+         ekpo_menge TYPE ekpo-menge,
+         ekpo_meins TYPE ekpo-meins,
+         ekpo_werks TYPE ekpo-werks,
+       END OF ty_ekpo.
+
+TYPES: BEGIN OF ty_final,
+         ebeln      TYPE ekpo-ebeln,
+         ebelp      TYPE ekpo-ebelp,
+         bedat      TYPE ekko-bedat,
+         bsart      TYPE ekko-bsart,
+         bukrs      TYPE ekko-bukrs,
+         lifnr      TYPE ekko-lifnr,
+         ekpo_matnr TYPE ekpo-matnr,
+         ekpo_menge TYPE ekpo-menge,
+         ekpo_meins TYPE ekpo-meins,
+         txz01      TYPE ekpo-txz01,
+         ekpo_werks TYPE ekpo-werks,
+       END OF ty_final.
+
+TYPES: BEGIN OF ty_history,
+         po_item  TYPE bapiekbe-po_item,
+         gr_doc   TYPE bapiekbe-mat_doc,
+         gr_year  TYPE bapiekbe-doc_year,
+         gr_date  TYPE bapiekbe-pstng_date,
+         gr_hist  TYPE bapiekbe-hist_type,
+         gr_qty   TYPE bapiekbe-quantity,
+         gr_amt   TYPE bapiekbe-val_loccur,
+
+         ir_doc   TYPE bapiekbe-mat_doc,
+         ir_year  TYPE bapiekbe-doc_year,
+         ir_date  TYPE bapiekbe-pstng_date,
+         ir_hist  TYPE bapiekbe-hist_type,
+         ir_amt   TYPE bapiekbe-val_loccur,
+         currency TYPE bapiekbe-currency,
+       END OF ty_history.
+
+DATA: it_final           TYPE STANDARD TABLE OF ty_final,
+      wa_final           TYPE ty_final,
+      it_history         TYPE STANDARD TABLE OF ty_history,
+      wa_history         TYPE ty_history,
+      it_fieldcat        TYPE slis_t_fieldcat_alv,
+      wa_fieldcat        TYPE slis_fieldcat_alv,
+      it_fieldct         TYPE slis_t_fieldcat_alv,
+      wa_fieldct         TYPE slis_fieldcat_alv,
+      it_sort            TYPE slis_t_sortinfo_alv,
+      wa_sort            TYPE slis_sortinfo_alv,
+      it_po_item_history TYPE STANDARD TABLE OF bapiekbe,
+
+      gs_layout          TYPE slis_layout_alv.
+
+SELECT-OPTIONS: s_ebeln FOR ekko-ebeln,
+                s_bedat FOR ekko-bedat,
+                s_bsart FOR ekko-bsart.
+
+PARAMETERS: p_bukrs TYPE ekko-bukrs DEFAULT 'EIL' OBLIGATORY .
+
+AT SELECTION-SCREEN.
+  IF s_ebeln IS INITIAL AND s_bedat IS INITIAL.
+    MESSAGE 'Please enter either PO No. or PO Date' TYPE 'E'.
+  ENDIF.
+
+  IF s_ebeln-high - s_ebeln-low > 1000.
+    MESSAGE 'PO Number range should not exceed 600' TYPE 'E'.
+  ENDIF.
+
+  IF s_bedat-high - s_bedat-low > 30.
+    MESSAGE 'Date range should not exceed 30 days' TYPE 'E'.
+  ENDIF.
+
+START-OF-SELECTION.
+  PERFORM fetch_data.
+  IF it_final IS INITIAL.
+    MESSAGE 'No data available.' TYPE 'S' DISPLAY LIKE 'E'.
+  ELSE.
+    PERFORM fieldcatalog.
+    PERFORM sorting.
+    PERFORM print_output.
+
+  ENDIF.
+
+FORM fetch_data.
+  SELECT ek~ebeln,
+         ep~ebelp,
+         ek~bedat,
+         ek~bsart,
+         ek~bukrs,
+         ek~lifnr,
+         ep~matnr AS ekpo_matnr,
+         ep~menge AS ekpo_menge,
+         ep~meins AS ekpo_meins,
+         ep~txz01,
+         ep~werks AS ekpo_werks
+    INTO CORRESPONDING FIELDS OF TABLE @it_final
+    FROM ekko AS ek
+    INNER JOIN ekpo AS ep ON ek~ebeln = ep~ebeln
+    WHERE ek~ebeln IN @s_ebeln
+      AND ek~bedat IN @s_bedat
+      AND ek~bukrs = @p_bukrs
+      AND ek~bstyp = 'F'.
+ENDFORM.
+
+FORM user_command USING r_ucomm TYPE sy-ucomm
+                        rs_selfield TYPE slis_selfield.
+  CASE r_ucomm.
+    WHEN '&IC1'.
+      IF rs_selfield-fieldname = 'EBELN'.
+        READ TABLE it_final INTO wa_final INDEX rs_selfield-tabindex.
+
+        CLEAR: it_po_item_history, it_po_item_history.
+        CALL FUNCTION 'BAPI_PO_GETDETAIL'
+          EXPORTING
+            purchaseorder   = wa_final-ebeln
+            history         = 'X'
+          TABLES
+            po_item_history = it_po_item_history.
+
+        IF it_history IS NOT INITIAL.
+          DELETE it_history WHERE po_item NE wa_final-ebelp.
+          IF it_history IS NOT INITIAL.
+            PERFORM fieldcat_history_combined.
+            PERFORM print USING it_history 'GR and IR History'.
+          ENDIF.
+        ENDIF.
+
+        LOOP AT it_po_item_history INTO DATA(ls_hist).
+          READ TABLE it_history INTO wa_history
+               WITH KEY po_item = ls_hist-po_item.
+          IF sy-subrc <> 0.
+            CLEAR wa_history.
+            wa_history-po_item = ls_hist-po_item.
+          ENDIF.
+
+          CASE ls_hist-hist_type.
+            WHEN 'E'. " GR
+              wa_history-gr_doc  = ls_hist-mat_doc.
+              wa_history-gr_year = ls_hist-doc_year.
+              wa_history-gr_date = ls_hist-pstng_date.
+              wa_history-gr_hist = ls_hist-hist_type.
+              wa_history-gr_qty  = ls_hist-quantity.
+              wa_history-gr_amt  = ls_hist-val_loccur.
+              wa_history-currency = ls_hist-currency.
+            WHEN 'Q'. " IR
+              wa_history-ir_doc  = ls_hist-mat_doc.
+              wa_history-ir_year = ls_hist-doc_year.
+              wa_history-ir_date = ls_hist-pstng_date.
+              wa_history-ir_hist = ls_hist-hist_type.
+              wa_history-ir_amt  = ls_hist-val_loccur.
+              wa_history-currency = ls_hist-currency.
+            WHEN OTHERS.
+              CONTINUE.
+          ENDCASE.
+
+          DELETE it_history WHERE po_item = wa_history-po_item.
+          APPEND wa_history TO it_history.
+        ENDLOOP.
+      ENDIF.
+
+
+  ENDCASE.
+ENDFORM.
+
+
+FORM fieldcat_history_combined.
+  CLEAR: it_fieldct, wa_fieldct.
+
+  DEFINE add_field.
+    wa_fieldct-fieldname = &1.
+    wa_fieldct-seltext_m = &2.
+    wa_fieldct-outputlen = &3.
+    APPEND wa_fieldct TO it_fieldct.
+    CLEAR wa_fieldct.
+  END-OF-DEFINITION.
+
+  add_field 'PO_ITEM'   'Item No.'         10.
+  add_field 'GR_DOC'    'GR Doc No.'       15.
+  add_field 'GR_YEAR'   'GR Year'          6.
+  add_field 'GR_DATE'   'GR Date'          10.
+  add_field 'GR_HIST'   'GR HISTORY'       10.
+  add_field 'GR_QTY'    'GR Quantity'      10.
+  add_field 'GR_AMT'    'GR Amount'        12.
+  add_field 'IR_DOC'    'IR Doc No.'       15.
+  add_field 'IR_YEAR'   'IR Year'          6.
+  add_field 'IR_DATE'   'IR Date'          10.
+  add_field 'IR_HIST'   'IR HIST'          07.
+  add_field 'IR_AMT'    'IR Amount'        12.
+  add_field 'CURRENCY'  'Currency'         5.
+ENDFORM.
+
+
+
+
+FORM print USING pt_history TYPE STANDARD TABLE
+                   pv_title  TYPE char50.
+
+  CALL FUNCTION 'REUSE_ALV_POPUP_TO_SELECT'
+    EXPORTING
+      i_title               = pv_title
+      i_allow_no_selection  = 'X'
+      i_screen_start_column = 30
+      i_screen_start_line   = 5
+      i_screen_end_column   = 120
+      i_screen_end_line     = 25
+      i_tabname             = 'Z_COMBINED'
+      it_fieldcat           = it_fieldct
+    TABLES
+      t_outtab              = pt_history.
+ENDFORM.
+
+FORM fieldcatalog.
+  DEFINE add_field.
+    wa_fieldcat-fieldname = &1.
+    wa_fieldcat-seltext_m = &2.
+    wa_fieldcat-outputlen = &3.
+    APPEND wa_fieldcat TO it_fieldcat.
+    CLEAR wa_fieldcat.
+  END-OF-DEFINITION.
+
+  add_field 'EBELN'        'PO Number'        15.
+  add_field 'EBELP'        'Item No.'         10.
+  add_field 'BEDAT'        'PO Date'          12.
+  add_field 'BSART'        'Doc. Type'        10.
+  add_field 'BUKRS'        'Company Code'     10.
+  add_field 'LIFNR'        'Vendor No.'       10.
+  add_field 'EKPO_MATNR'   'Material No.'     18.
+  add_field 'EKPO_MENGE'   'PO Quantity'      10.
+  add_field 'EKPO_MEINS'   'PO UoM'           6.
+  add_field 'TXZ01'        'Description'      30.
+  add_field 'EKPO_WERKS'   'Plant'            4.
+
+  LOOP AT it_fieldcat INTO wa_fieldcat.
+    IF wa_fieldcat-fieldname = 'EKPO_MENGE'.
+      wa_fieldcat-do_sum = 'X'.
+      MODIFY it_fieldcat FROM wa_fieldcat INDEX sy-tabix.
+    ENDIF.
+  ENDLOOP.
+
+  READ TABLE it_fieldcat INTO wa_fieldcat WITH KEY fieldname = 'EBELN'.
+  IF sy-subrc = 0.
+    wa_fieldcat-hotspot = 'X'.
+    MODIFY it_fieldcat FROM wa_fieldcat INDEX sy-tabix.
+  ENDIF.
+ENDFORM.
+
+FORM sorting.
+  CLEAR wa_sort.
+  wa_sort-fieldname = 'EBELN'.
+  wa_sort-up = 'X'.
+  wa_sort-subtot = 'X'.
+  APPEND wa_sort TO it_sort.
+ENDFORM.
+
+FORM print_output.
+  SORT it_final BY ebeln ebelp.
+  gs_layout-no_totalline = 'X'.
+
+  CALL FUNCTION 'REUSE_ALV_GRID_DISPLAY'
+    EXPORTING
+      i_callback_program      = sy-repid
+      i_callback_user_command = 'USER_COMMAND'
+      is_layout               = gs_layout
+      it_fieldcat             = it_fieldcat
+      it_sort                 = it_sort
+    TABLES
+      t_outtab                = it_final.
+ENDFORM.
